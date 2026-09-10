@@ -3,7 +3,7 @@ import {
   ChevronRight, ChevronDown, Plus, MoreVertical, ZoomIn, ZoomOut, Download,
   X, Trash2, RefreshCw, AlertTriangle, PauseCircle, XCircle, CheckCircle2,
   Clock, Diamond, Link2, Calendar, ListTree, Image as ImageIcon, Pencil,
-  TrendingUp, FolderKanban
+  TrendingUp, FolderKanban, GripVertical, Copy, Palette
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -46,12 +46,22 @@ const ROW_H = 36;
 const MONTH_ROW_H = 28;
 const DAY_ROW_H = 22;
 const HEADER_H = MONTH_ROW_H + DAY_ROW_H;
-const LEFT_W = 280;
+const TASK_COL_W = 280;
+const DATE_COL_W = { start: 92, end: 92, days: 56 };
+const STORAGE_KEY_PROJECTS = "gantt_projects_v1";
+const STORAGE_KEY_CURRENT = "gantt_current_project_v1";
 const BAR_H = 22;
 const MIN_DAY_W = 8;
 const MAX_DAY_W = 64;
 
 const PALETTE = ["#2F6FED","#0EA5A4","#D97706","#DC2626","#7C3AED","#0891B2","#65A30D","#DB2777","#475569"];
+// Canva-style "Default solid colors" swatch grid: 4 rows x 7 columns
+const COLOR_GRID = [
+  ["#000000", "#4D4D4D", "#7F7F7F", "#999999", "#B3B3B3", "#D9D9D9", "#FFFFFF"],
+  ["#FF3B30", "#FF6B6B", "#FF6EC7", "#D9A9F5", "#B968E0", "#8B5CF6", "#5B3FD9"],
+  ["#0E9AA7", "#22C1E3", "#6EE7E0", "#4F8EF7", "#3B5FE0", "#1E40AF", "#1E1B8C"],
+  ["#0DB876", "#7BD957", "#DFF56B", "#FACC15", "#F9A94C", "#F5851F", "#F0630A"],
+];
 
 const STATE_META = {
   inprogress: { label: "In Progress", color: "#0EA5A4", Icon: RefreshCw, spin: true },
@@ -417,7 +427,7 @@ function DepMenu({ x, y, onClose, onDelete }) {
 /* ----------------------------------------------------------------------
    Project switcher popover (multi-project support)
 ---------------------------------------------------------------------- */
-function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, onDelete, onCreate, onClose }) {
+function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, onDelete, onCreate, onDuplicate, onClose }) {
   const ref = useRef(null);
   const [renamingId, setRenamingId] = useState(null);
   const [renameVal, setRenameVal] = useState("");
@@ -441,13 +451,13 @@ function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, 
   return (
     <div
       ref={ref}
-      style={{ position: "fixed", left: anchorRect.left, top: anchorRect.bottom + 6, zIndex: 50, width: 280 }}
+      style={{ position: "fixed", left: anchorRect.left, top: anchorRect.bottom + 6, zIndex: 50, width: 300 }}
       className="bg-white border border-slate-200 rounded-lg shadow-xl py-1.5 text-sm"
     >
       <div className="px-3 pb-1.5 text-xs font-medium text-slate-400 tracking-wide">PROJECTS</div>
       <div className="max-h-56 overflow-auto">
         {projects.map((p) => (
-          <div key={p.id} className={`flex items-center gap-1.5 px-2 py-1 mx-1 rounded-md ${p.id === currentId ? "bg-slate-100" : "hover:bg-slate-50"}`}>
+          <div key={p.id} className={`flex items-center gap-1 px-2 py-1 mx-1 rounded-md ${p.id === currentId ? "bg-slate-100" : "hover:bg-slate-50"}`}>
             {renamingId === p.id ? (
               <input
                 autoFocus
@@ -472,6 +482,13 @@ function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, 
               title="Rename project"
             >
               <Pencil size={12} />
+            </button>
+            <button
+              onClick={() => onDuplicate(p.id)}
+              className="h-6 w-6 shrink-0 flex items-center justify-center rounded text-slate-300 hover:text-slate-600 hover:bg-slate-100"
+              title="Duplicate project"
+            >
+              <Copy size={12} />
             </button>
             {projects.length > 1 && (
               <button
@@ -514,6 +531,7 @@ function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, 
 function DetailModal({ task, hasChildren, onSave, onDelete, onClose }) {
   const [tab, setTab] = useState("General");
   const [draft, setDraft] = useState(task);
+  const [showAllColors, setShowAllColors] = useState(false);
   useEffect(() => setDraft(task), [task]);
   if (!task) return null;
 
@@ -572,15 +590,63 @@ function DetailModal({ task, hasChildren, onSave, onDelete, onClose }) {
                       onClick={() => update({ __pickerOpen: !draft.__pickerOpen })}
                     />
                     {draft.__pickerOpen && (
-                      <div className="absolute z-10 mt-1 p-2 bg-white border border-slate-200 rounded-lg shadow-lg grid grid-cols-5 gap-1">
-                        {PALETTE.map((c) => (
+                      <div className="absolute z-10 mt-1 p-3 bg-white border border-slate-200 rounded-xl shadow-xl" style={{ width: 264 }}>
+                        <div className="flex items-center justify-between mb-2.5">
+                          <div className="flex items-center gap-1.5 text-slate-700" style={{ fontSize: 13, fontWeight: 600 }}>
+                            <Palette size={14} className="text-slate-400" />
+                            Default solid colors
+                          </div>
                           <button
-                            key={c}
-                            className="h-6 w-6 rounded"
-                            style={{ background: c }}
-                            onClick={() => update({ color: c, __pickerOpen: false })}
-                          />
-                        ))}
+                            type="button"
+                            onClick={() => setShowAllColors((v) => !v)}
+                            className="text-blue-600 hover:underline"
+                            style={{ fontSize: 12 }}
+                          >
+                            {showAllColors ? "Less" : "See all"}
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-7 gap-2">
+                          {COLOR_GRID.flat().map((c) => (
+                            <button
+                              key={c}
+                              type="button"
+                              className="h-6 w-6 rounded-full shrink-0"
+                              style={{
+                                background: c,
+                                border: c === "#FFFFFF" ? "1px solid #e2e8f0" : "1px solid rgba(0,0,0,0.06)",
+                                boxShadow: draft.color.toUpperCase() === c ? "0 0 0 2px #ffffff, 0 0 0 4px #0f172a" : undefined,
+                              }}
+                              onClick={() => update({ color: c, __pickerOpen: false })}
+                              title={c}
+                            />
+                          ))}
+                        </div>
+                        {showAllColors && (
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            <div className="text-slate-500 mb-1.5" style={{ fontSize: 12 }}>Custom color</div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={draft.color}
+                                onChange={(e) => update({ color: e.target.value })}
+                                className="h-9 w-9 rounded-md border border-slate-300 cursor-pointer p-0"
+                              />
+                              <input
+                                type="text"
+                                value={draft.color}
+                                onChange={(e) => update({ color: e.target.value })}
+                                className="flex-1 border border-slate-300 rounded-md px-2 h-9 text-sm min-w-0"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => update({ __pickerOpen: false })}
+                                className="h-9 px-3 rounded-md bg-slate-900 text-white text-sm shrink-0"
+                              >
+                                Done
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -720,11 +786,12 @@ function DetailModal({ task, hasChildren, onSave, onDelete, onClose }) {
 /* ----------------------------------------------------------------------
    Export Modal — mirrors export.png, generates PNG mirroring projectplan_export.png
 ---------------------------------------------------------------------- */
-function ExportModal({ tasks, projectName, bounds, onClose }) {
+function ExportModal({ tasks, projectName, bounds, initialShowDates, onClose }) {
   const [title, setTitle] = useState(projectName);
   const [start, setStart] = useState(formatDate(bounds.start));
   const [end, setEnd] = useState(formatDate(bounds.end));
   const [timescale, setTimescale] = useState("Months, Years");
+  const [showDates, setShowDates] = useState(!!initialShowDates);
   const [previewUrl, setPreviewUrl] = useState(null);
 
   const generate = () => {
@@ -733,7 +800,10 @@ function ExportModal({ tasks, projectName, bounds, onClose }) {
     const dpr = 2;
     const dayW = timescale === "Days" ? 22 : timescale === "Weeks" ? 10 : 5;
     const rowH = 34;
-    const leftW = 230;
+    const nameColW = 230;
+    const dateCols = { start: 70, end: 70, days: 44 };
+    const dateColsW = showDates ? dateCols.start + dateCols.end + dateCols.days : 0;
+    const leftW = nameColW + dateColsW;
     const headerH = 56;
     const padTop = 70;
     const s = parseDate(start), e = parseDate(end);
@@ -761,6 +831,18 @@ function ExportModal({ tasks, projectName, bounds, onClose }) {
     const gridTop = padTop;
     const xFor = (dateStr) => leftW + 20 + diffDaysDate(s, parseDate(dateStr)) * dayW;
 
+    // left-panel column headers
+    ctx.textAlign = "left";
+    ctx.font = "600 11px Inter, Arial, sans-serif";
+    ctx.fillStyle = "#94a3b8";
+    ctx.fillText("TASK NAME", 16, gridTop + headerH / 2 + 4);
+    if (showDates) {
+      ctx.textAlign = "center";
+      ctx.fillText("Start", nameColW + dateCols.start / 2, gridTop + headerH / 2 + 4);
+      ctx.fillText("End", nameColW + dateCols.start + dateCols.end / 2, gridTop + headerH / 2 + 4);
+      ctx.fillText("Days", nameColW + dateCols.start + dateCols.end + dateCols.days / 2, gridTop + headerH / 2 + 4);
+    }
+
     // month header
     let cursor = new Date(s);
     ctx.font = "600 12px Inter, Arial, sans-serif";
@@ -781,6 +863,14 @@ function ExportModal({ tasks, projectName, bounds, onClose }) {
     ctx.moveTo(leftW + 20, gridTop + headerH);
     ctx.lineTo(leftW + 20 + totalDays * dayW, gridTop + headerH);
     ctx.stroke();
+    // header bottom rule + left-panel column separators
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.beginPath(); ctx.moveTo(0, gridTop + headerH); ctx.lineTo(leftW, gridTop + headerH); ctx.stroke();
+    if (showDates) {
+      [nameColW, nameColW + dateCols.start, nameColW + dateCols.start + dateCols.end].forEach((x) => {
+        ctx.beginPath(); ctx.moveTo(x, gridTop); ctx.lineTo(x, gridTop + headerH + rows.length * rowH); ctx.stroke();
+      });
+    }
 
     const rowY = {};
     const rowRect = {};
@@ -797,7 +887,19 @@ function ExportModal({ tasks, projectName, bounds, onClose }) {
       ctx.fillStyle = "#1e293b";
       ctx.font = t.depth === 0 ? "600 12.5px Inter, Arial, sans-serif" : "400 12px Inter, Arial, sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText(t.name, 16 + t.depth * 14, y + rowH / 2 + 4, leftW - 24 - t.depth * 14);
+      ctx.fillText(t.name, 16 + t.depth * 14, y + rowH / 2 + 4, nameColW - 24 - t.depth * 14);
+
+      if (showDates) {
+        const isMs = t.type === "milestone";
+        const endDate = isMs ? t.start : addDays(t.start, Math.max(t.duration, 1) - 1);
+        ctx.font = "400 11px Inter, Arial, sans-serif";
+        ctx.fillStyle = "#64748b";
+        ctx.textAlign = "center";
+        ctx.fillText(fmtShort(t.start), nameColW + dateCols.start / 2, y + rowH / 2 + 4);
+        ctx.fillText(fmtShort(endDate), nameColW + dateCols.start + dateCols.end / 2, y + rowH / 2 + 4);
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText(isMs ? "—" : String(t.duration), nameColW + dateCols.start + dateCols.end + dateCols.days / 2, y + rowH / 2 + 4);
+      }
 
       const barY = y + (rowH - 20) / 2;
       if (t.type === "milestone") {
@@ -847,7 +949,7 @@ function ExportModal({ tasks, projectName, bounds, onClose }) {
     setPreviewUrl(canvas.toDataURL("image/png"));
   };
 
-  useEffect(() => { generate(); /* eslint-disable-next-line */ }, [title, start, end, timescale]);
+  useEffect(() => { generate(); /* eslint-disable-next-line */ }, [title, start, end, timescale, showDates]);
 
   const download = () => {
     if (!previewUrl) { generate(); return; }
@@ -909,6 +1011,15 @@ function ExportModal({ tasks, projectName, bounds, onClose }) {
                 <option>Months, Years</option>
               </select>
             </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600 select-none cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-slate-900"
+                checked={showDates}
+                onChange={(e) => setShowDates(e.target.checked)}
+              />
+              Show Start / End / Days columns
+            </label>
             <div className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
               If the Download button doesn't start a save automatically, right-click (or long-press) the preview image and choose "Save image as…", or use "Open in new tab" and save from there.
             </div>
@@ -1042,6 +1153,41 @@ export default function ProjectGanttApp() {
     { id: "proj1", name: "Website Redesign Launch", tasks: seedTasks() },
   ]);
   const [currentProjectId, setCurrentProjectId] = useState("proj1");
+  const [storageLoaded, setStorageLoaded] = useState(false);
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved
+
+  // Load any previously saved projects on mount, so the plan survives closing/reopening the page.
+  useEffect(() => {
+    try {
+      const savedRaw = window.localStorage.getItem(STORAGE_KEY_PROJECTS);
+      if (savedRaw) {
+        const parsed = JSON.parse(savedRaw);
+        if (Array.isArray(parsed) && parsed.length) setProjects(parsed);
+      }
+    } catch (e) { /* nothing saved yet, or storage unavailable */ }
+    try {
+      const savedCur = window.localStorage.getItem(STORAGE_KEY_CURRENT);
+      if (savedCur) setCurrentProjectId(savedCur);
+    } catch (e) { /* nothing saved yet */ }
+    setStorageLoaded(true);
+  }, []);
+
+  // Persist whenever projects or the active project change, once the initial load has settled.
+  useEffect(() => {
+    if (!storageLoaded) return;
+    setSaveState("saving");
+    const t = setTimeout(() => {
+      try {
+        window.localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(projects));
+        window.localStorage.setItem(STORAGE_KEY_CURRENT, currentProjectId);
+        setSaveState("saved");
+      } catch (e) {
+        setSaveState("idle");
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [projects, currentProjectId, storageLoaded]);
+
   const currentProject = projects.find((p) => p.id === currentProjectId) || projects[0];
   const tasks = currentProject.tasks;
   const setTasks = useCallback((updater) => {
@@ -1059,6 +1205,9 @@ export default function ProjectGanttApp() {
   const [sCurveOpen, setSCurveOpen] = useState(false);
   const [projSwitcherOpen, setProjSwitcherOpen] = useState(false);
   const [highlightCritical, setHighlightCritical] = useState(false);
+  const [showDateColumns, setShowDateColumns] = useState(false);
+  const [dragTaskId, setDragTaskId] = useState(null);
+  const [dropIndicator, setDropIndicator] = useState(null); // {id, after}
   const [dragInfo, setDragInfo] = useState(null);
   const [connectPreview, setConnectPreview] = useState(null);
 
@@ -1069,6 +1218,7 @@ export default function ProjectGanttApp() {
   const rows = useMemo(() => flattenVisible(tasks), [tasks]);
   const bounds = useMemo(() => getBounds(tasks), [tasks]);
   const criticalInfo = useMemo(() => computeCriticalPath(tasks), [tasks]);
+  const leftW = TASK_COL_W + (showDateColumns ? DATE_COL_W.start + DATE_COL_W.end + DATE_COL_W.days : 0);
   const totalDays = diffDaysDate(bounds.start, bounds.end) + 1;
   const contentWidth = totalDays * dayWidth;
   const segments = useMemo(() => monthSegments(bounds.start, bounds.end, dayWidth), [bounds, dayWidth]);
@@ -1079,7 +1229,7 @@ export default function ProjectGanttApp() {
   const xFor = useCallback((dateStr) => diffDaysDate(bounds.start, parseDate(dateStr)) * dayWidth, [bounds, dayWidth]);
   const dayIdxFromClientX = useCallback((clientX) => {
     const rect = wrapperRef.current.getBoundingClientRect();
-    return Math.round((clientX - rect.left - LEFT_W) / dayWidth);
+    return Math.round((clientX - rect.left - leftW) / dayWidth);
   }, [dayWidth]);
   const relCoordsFromClient = useCallback((clientX, clientY) => {
     const rect = wrapperRef.current.getBoundingClientRect();
@@ -1143,6 +1293,19 @@ export default function ProjectGanttApp() {
   const addTopLevel = (type) => addChild(null, type);
   const toggleCollapse = (id) => updateTask(id, { collapsed: !tasks.find((t) => t.id === id).collapsed });
 
+  /* ---------------- Reordering (drag task name up/down among siblings) ---------------- */
+  const reorderSibling = (draggedId, targetId, after) => {
+    setTasks((ts) => {
+      const dragged = ts.find((t) => t.id === draggedId);
+      const target = ts.find((t) => t.id === targetId);
+      if (!dragged || !target || draggedId === targetId || dragged.parentId !== target.parentId) return ts;
+      const without = ts.filter((t) => t.id !== draggedId);
+      const targetIdx = without.findIndex((t) => t.id === targetId);
+      const insertIdx = after ? targetIdx + 1 : targetIdx;
+      return [...without.slice(0, insertIdx), dragged, ...without.slice(insertIdx)];
+    });
+  };
+
   /* ---------------- Project management ---------------- */
   const selectProject = (id) => setCurrentProjectId(id);
   const renameProject = (id, name) => setProjects((ps) => ps.map((p) => (p.id === id ? { ...p, name } : p)));
@@ -1158,6 +1321,21 @@ export default function ProjectGanttApp() {
     const id = newId();
     setProjects((ps) => [...ps, { id, name, tasks: starterTasks() }]);
     setCurrentProjectId(id);
+  };
+  const duplicateProject = (id) => {
+    const proj = projects.find((p) => p.id === id);
+    if (!proj) return;
+    const idMap = {};
+    proj.tasks.forEach((t) => { idMap[t.id] = newId(); });
+    const clonedTasks = proj.tasks.map((t) => ({
+      ...t,
+      id: idMap[t.id],
+      parentId: t.parentId ? (idMap[t.parentId] || null) : null,
+      dependsOn: (t.dependsOn || []).map((d) => idMap[d]).filter(Boolean),
+    }));
+    const newProjId = newId();
+    setProjects((ps) => [...ps, { id: newProjId, name: `${proj.name} (Copy)`, tasks: clonedTasks }]);
+    setCurrentProjectId(newProjId);
   };
 
   /* ---------------- Drag: move / resize ----------------
@@ -1257,6 +1435,14 @@ export default function ProjectGanttApp() {
     return { x0, x1, y };
   };
 
+  if (!storageLoaded) {
+    return (
+      <div className="w-full h-screen flex items-center justify-center bg-slate-50 text-slate-400" style={{ fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, sans-serif", fontSize: 13 }}>
+        Loading your projects…
+      </div>
+    );
+  }
+
   return (
     <div className="w-full h-screen flex flex-col bg-slate-50 text-slate-800" style={{ fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, sans-serif" }}>
       <style>{`
@@ -1280,6 +1466,7 @@ export default function ProjectGanttApp() {
           <ChevronDown size={14} className="text-slate-400 shrink-0" />
         </button>
         <span className="text-xs text-slate-400 border border-slate-200 rounded-full px-2 py-0.5 shrink-0">Gantt</span>
+        <span className="text-xs text-slate-300 shrink-0">{saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : ""}</span>
         <div className="flex-1" />
         <label className="flex items-center gap-1.5 text-sm text-slate-600 select-none cursor-pointer px-1 shrink-0">
           <input
@@ -1289,6 +1476,15 @@ export default function ProjectGanttApp() {
             onChange={(e) => setHighlightCritical(e.target.checked)}
           />
           Highlight critical path
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-slate-600 select-none cursor-pointer px-1 shrink-0">
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5 accent-slate-900"
+            checked={showDateColumns}
+            onChange={(e) => setShowDateColumns(e.target.checked)}
+          />
+          Show dates
         </label>
         <div className="w-px h-6 bg-slate-200 mx-1" />
         <button onClick={() => addTopLevel("task")} className="h-8 px-3 rounded-md border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 flex items-center gap-1.5">
@@ -1311,12 +1507,19 @@ export default function ProjectGanttApp() {
 
       {/* Body */}
       <div ref={scrollRef} className="flex-1 overflow-auto relative select-none">
-        <div ref={wrapperRef} style={{ width: LEFT_W + contentWidth, position: "relative" }}>
+        <div ref={wrapperRef} style={{ width: leftW + contentWidth, position: "relative" }}>
           {/* Header */}
           <div className="sticky top-0 z-30 bg-white">
             <div className="flex" style={{ height: MONTH_ROW_H }}>
-              <div className="sticky left-0 z-30 bg-white border-r border-b border-slate-200 flex items-center px-3 text-xs font-medium text-slate-400" style={{ width: LEFT_W, flexShrink: 0 }}>
-                TASK NAME
+              <div className="sticky left-0 z-30 bg-white border-r border-b border-slate-200 flex items-center" style={{ width: leftW, flexShrink: 0 }}>
+                <div className="px-3 text-xs font-medium text-slate-400 flex-1 min-w-0">TASK NAME</div>
+                {showDateColumns && (
+                  <>
+                    <div className="text-xs font-medium text-slate-400 text-center shrink-0" style={{ width: DATE_COL_W.start }}>Start</div>
+                    <div className="text-xs font-medium text-slate-400 text-center shrink-0" style={{ width: DATE_COL_W.end }}>End</div>
+                    <div className="text-xs font-medium text-slate-400 text-center shrink-0" style={{ width: DATE_COL_W.days }}>Days</div>
+                  </>
+                )}
               </div>
               <div className="flex border-b border-slate-200 bg-white" style={{ width: contentWidth }}>
                 {segments.map((seg) => (
@@ -1327,7 +1530,7 @@ export default function ProjectGanttApp() {
               </div>
             </div>
             <div className="flex" style={{ height: DAY_ROW_H }}>
-              <div className="sticky left-0 z-30 bg-white border-r border-b border-slate-200" style={{ width: LEFT_W, flexShrink: 0 }} />
+              <div className="sticky left-0 z-30 bg-white border-r border-b border-slate-200" style={{ width: leftW, flexShrink: 0 }} />
               <div className="relative bg-white border-b border-slate-200" style={{ width: contentWidth, height: DAY_ROW_H }}>
                 {weekendDays.map((d) => (
                   <div
@@ -1352,7 +1555,7 @@ export default function ProjectGanttApp() {
           {/* Vertical day/month gridlines behind the chart */}
           <svg
             className="absolute pointer-events-none"
-            style={{ left: LEFT_W, top: HEADER_H, width: contentWidth, height: rows.length * ROW_H, zIndex: 0 }}
+            style={{ left: leftW, top: HEADER_H, width: contentWidth, height: rows.length * ROW_H, zIndex: 0 }}
           >
             {days.map((d) => (
               <line
@@ -1370,38 +1573,79 @@ export default function ProjectGanttApp() {
             const isMilestone = t.type === "milestone";
             const meta = STATE_META[t.state] || STATE_META.inprogress;
             const isCritical = highlightCritical && criticalInfo.criticalIds.has(t.id);
+            const draggedTask = dragTaskId ? tasks.find((x) => x.id === dragTaskId) : null;
+            const isValidDropTarget = draggedTask && draggedTask.id !== t.id && draggedTask.parentId === t.parentId;
+            const showDropAbove = isValidDropTarget && dropIndicator?.id === t.id && !dropIndicator.after;
+            const showDropBelow = isValidDropTarget && dropIndicator?.id === t.id && dropIndicator.after;
+            const endDate = isMilestone ? t.start : addDays(t.start, Math.max(t.duration, 1) - 1);
             return (
-              <div key={t.id} className="flex border-b border-slate-200 group" style={{ height: ROW_H }}>
+              <div
+                key={t.id}
+                className="flex border-b border-slate-200 group relative"
+                style={{ height: ROW_H, opacity: dragTaskId === t.id ? 0.4 : 1 }}
+                onDragOver={(e) => {
+                  if (!draggedTask || draggedTask.id === t.id || draggedTask.parentId !== t.parentId) return;
+                  e.preventDefault();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setDropIndicator({ id: t.id, after: e.clientY > rect.top + rect.height / 2 });
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragTaskId && dropIndicator && dropIndicator.id === t.id) reorderSibling(dragTaskId, t.id, dropIndicator.after);
+                  setDragTaskId(null);
+                  setDropIndicator(null);
+                }}
+              >
+                {showDropAbove && <div className="absolute left-0 right-0 top-0 h-0.5 bg-blue-500 z-20 pointer-events-none" />}
+                {showDropBelow && <div className="absolute left-0 right-0 bottom-0 h-0.5 bg-blue-500 z-20 pointer-events-none" />}
                 {/* Left cell */}
                 <div
-                  className="sticky left-0 z-10 bg-white border-r border-slate-200 flex items-center pr-1"
-                  style={{ width: LEFT_W, flexShrink: 0, paddingLeft: 10 + t.depth * 16 }}
+                  className="sticky left-0 z-10 bg-white border-r border-slate-200 flex items-center"
+                  style={{ width: leftW, flexShrink: 0 }}
                 >
-                  {t.hasChildren ? (
-                    <button onClick={() => toggleCollapse(t.id)} className="h-5 w-5 flex items-center justify-center text-slate-400 hover:text-slate-700 shrink-0">
-                      {t.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  <div className="flex items-center flex-1 min-w-0 pr-1" style={{ paddingLeft: 4 + t.depth * 16 }}>
+                    <span
+                      draggable
+                      onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDragTaskId(t.id); }}
+                      onDragEnd={() => { setDragTaskId(null); setDropIndicator(null); }}
+                      className="h-5 w-4 shrink-0 flex items-center justify-center text-slate-300 hover:text-slate-500 opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing"
+                      title="Drag to reorder"
+                    >
+                      <GripVertical size={13} />
+                    </span>
+                    {t.hasChildren ? (
+                      <button onClick={() => toggleCollapse(t.id)} className="h-5 w-5 flex items-center justify-center text-slate-400 hover:text-slate-700 shrink-0">
+                        {t.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                      </button>
+                    ) : (
+                      <span className="w-5 shrink-0" />
+                    )}
+                    <span
+                      className="h-2 w-2 rounded-full shrink-0 mr-1.5"
+                      style={{ background: t.color }}
+                    />
+                    <button
+                      onClick={() => setDetailTaskId(t.id)}
+                      className={`truncate text-left hover:underline ${t.depth === 0 ? "font-medium" : ""}`}
+                      style={{ fontSize: 13, color: isCritical ? "#dc2626" : t.depth === 0 ? "#1e293b" : "#475569" }}
+                      title={isCritical ? `${t.name} (on critical path)` : t.name}
+                    >
+                      {t.name}
                     </button>
-                  ) : (
-                    <span className="w-5 shrink-0" />
+                    <button
+                      onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ id: t.id, x: r.right - 170, y: r.bottom + 4 }); }}
+                      className="ml-auto h-6 w-6 shrink-0 flex items-center justify-center rounded text-slate-300 hover:text-slate-600 hover:bg-slate-100 opacity-0 group-hover:opacity-100"
+                    >
+                      <MoreVertical size={14} />
+                    </button>
+                  </div>
+                  {showDateColumns && (
+                    <>
+                      <div className="text-center shrink-0 text-slate-500" style={{ width: DATE_COL_W.start, fontSize: 11.5 }}>{fmtShort(t.start)}</div>
+                      <div className="text-center shrink-0 text-slate-500" style={{ width: DATE_COL_W.end, fontSize: 11.5 }}>{fmtShort(endDate)}</div>
+                      <div className="text-center shrink-0 text-slate-400" style={{ width: DATE_COL_W.days, fontSize: 11.5 }}>{isMilestone ? "—" : t.duration}</div>
+                    </>
                   )}
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0 mr-1.5"
-                    style={{ background: t.color }}
-                  />
-                  <button
-                    onClick={() => setDetailTaskId(t.id)}
-                    className={`truncate text-left hover:underline ${t.depth === 0 ? "font-medium" : ""}`}
-                    style={{ fontSize: 13, color: isCritical ? "#dc2626" : t.depth === 0 ? "#1e293b" : "#475569" }}
-                    title={isCritical ? `${t.name} (on critical path)` : t.name}
-                  >
-                    {t.name}
-                  </button>
-                  <button
-                    onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ id: t.id, x: r.right - 170, y: r.bottom + 4 }); }}
-                    className="ml-auto h-6 w-6 shrink-0 flex items-center justify-center rounded text-slate-300 hover:text-slate-600 hover:bg-slate-100 opacity-0 group-hover:opacity-100"
-                  >
-                    <MoreVertical size={14} />
-                  </button>
                 </div>
 
                 {/* Right cell (bar / milestone) */}
@@ -1490,7 +1734,7 @@ export default function ProjectGanttApp() {
           {showToday && (
             <div
               className="absolute top-0 w-px bg-red-400 pointer-events-none z-20"
-              style={{ left: LEFT_W + todayX, height: HEADER_H + rows.length * ROW_H }}
+              style={{ left: leftW + todayX, height: HEADER_H + rows.length * ROW_H }}
             >
               <div className="absolute -top-0 -left-1.5 w-0 h-0" style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "6px solid #f87171" }} />
             </div>
@@ -1499,7 +1743,7 @@ export default function ProjectGanttApp() {
           {/* Dependency overlay */}
           <svg
             className="absolute pointer-events-none z-10"
-            style={{ left: LEFT_W, top: HEADER_H, width: contentWidth, height: rows.length * ROW_H }}
+            style={{ left: leftW, top: HEADER_H, width: contentWidth, height: rows.length * ROW_H }}
           >
             {rows.flatMap((t) =>
               (t.dependsOn || []).map((pid) => ({ pid, t, isCrit: highlightCritical && criticalInfo.criticalEdges.has(`${pid}->${t.id}`) }))
@@ -1530,8 +1774,8 @@ export default function ProjectGanttApp() {
               })}
             {connectPreview && (
               <line
-                x1={connectPreview.x1 - LEFT_W} y1={connectPreview.y1 - HEADER_H}
-                x2={connectPreview.x2 - LEFT_W} y2={connectPreview.y2 - HEADER_H}
+                x1={connectPreview.x1 - leftW} y1={connectPreview.y1 - HEADER_H}
+                x2={connectPreview.x2 - leftW} y2={connectPreview.y2 - HEADER_H}
                 stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="4 3"
               />
             )}
@@ -1590,6 +1834,7 @@ export default function ProjectGanttApp() {
           onRename={renameProject}
           onDelete={deleteProject}
           onCreate={createProject}
+          onDuplicate={duplicateProject}
           onClose={() => setProjSwitcherOpen(false)}
         />
       )}
@@ -1599,7 +1844,7 @@ export default function ProjectGanttApp() {
       )}
 
       {exportOpen && (
-        <ExportModal tasks={tasks} projectName={currentProject.name} bounds={bounds} onClose={() => setExportOpen(false)} />
+        <ExportModal tasks={tasks} projectName={currentProject.name} bounds={bounds} initialShowDates={showDateColumns} onClose={() => setExportOpen(false)} />
       )}
 
       {sCurveOpen && (
