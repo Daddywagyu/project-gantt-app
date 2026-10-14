@@ -122,26 +122,77 @@ function descendantIds(tasks, id) {
    immediate children's spans, walking upward so grandparents etc. stay consistent too.
    Only walks the ancestor chain of `startId`, since every other branch is assumed
    already consistent (parents are never edited directly — see DetailModal/beginDrag). */
+/* Recompute one summary task from its immediate children: Start/Duration = union of the
+   children's spans, Progress = duration-weighted average of the children's progress. */
+function recomputeParent(next, byId, parentId) {
+  const parent = byId[parentId];
+  const kids = next.filter((t) => t.parentId === parentId);
+  if (!parent || !kids.length) return false;
+  let minS = null, maxE = null, wSum = 0, pSum = 0;
+  kids.forEach((k) => {
+    const s = parseDate(k.start);
+    const e = k.type === "milestone" ? s : parseDate(addDays(k.start, Math.max(k.duration, 1) - 1));
+    if (!minS || s < minS) minS = s;
+    if (!maxE || e > maxE) maxE = e;
+    const w = k.type === "milestone" ? 1 : Math.max(k.duration, 1);
+    wSum += w;
+    pSum += w * (Number(k.progress) || 0);
+  });
+  parent.start = formatDate(minS);
+  parent.duration = parent.type === "milestone" ? 0 : Math.max(1, diffDaysDate(minS, maxE) + 1);
+  parent.progress = wSum ? Math.round(pSum / wSum) : 0;
+  return true;
+}
+
 function rollupAncestors(tasks, startId) {
   const next = tasks.map((t) => ({ ...t }));
   const byId = Object.fromEntries(next.map((t) => [t.id, t]));
   let parentId = byId[startId]?.parentId;
   while (parentId && byId[parentId]) {
-    const kids = next.filter((t) => t.parentId === parentId);
-    if (!kids.length) break;
-    let minS = null, maxE = null;
-    kids.forEach((k) => {
-      const s = parseDate(k.start);
-      const e = k.type === "milestone" ? s : parseDate(addDays(k.start, Math.max(k.duration, 1) - 1));
-      if (!minS || s < minS) minS = s;
-      if (!maxE || e > maxE) maxE = e;
-    });
-    const parent = byId[parentId];
-    parent.start = formatDate(minS);
-    parent.duration = parent.type === "milestone" ? 0 : Math.max(1, diffDaysDate(minS, maxE) + 1);
-    parentId = parent.parentId;
+    if (!recomputeParent(next, byId, parentId)) break;
+    parentId = byId[parentId].parentId;
   }
   return next;
+}
+
+/* Normalize a whole task list (used on load/import): recompute every summary task bottom-up. */
+function rollupAll(tasks) {
+  const next = tasks.map((t) => ({ ...t }));
+  const byId = Object.fromEntries(next.map((t) => [t.id, t]));
+  const depthOf = (t) => { let d = 0, cur = t; while (cur && cur.parentId && byId[cur.parentId] && d < 100) { d++; cur = byId[cur.parentId]; } return d; };
+  const parentIds = [...new Set(next.map((t) => t.parentId).filter((id) => id && byId[id]))];
+  parentIds.sort((a, b) => depthOf(byId[b]) - depthOf(byId[a]));
+  parentIds.forEach((id) => recomputeParent(next, byId, id));
+  return next;
+}
+
+/* Validate + clean tasks coming from an imported file. Throws Error with a readable message. */
+const VALID_STATES = ["inprogress", "delayed", "problem", "pause", "cancelled", "completed"];
+const isIsoDate = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(parseDate(v));
+function sanitizeImportedTasks(raw, projectLabel) {
+  if (!Array.isArray(raw)) throw new Error(`"${projectLabel}": tasks must be a list.`);
+  const idMap = {};
+  raw.forEach((t) => { if (t && t.id != null) idMap[String(t.id)] = newId(); });
+  const tasks = raw.map((t, i) => {
+    if (!t || t.id == null) throw new Error(`"${projectLabel}": task #${i + 1} has no id.`);
+    if (!isIsoDate(t.start)) throw new Error(`"${projectLabel}": task "${t.name || i + 1}" has an invalid start date (expected YYYY-MM-DD).`);
+    const type = t.type === "milestone" ? "milestone" : "task";
+    return {
+      id: idMap[String(t.id)],
+      parentId: t.parentId != null && idMap[String(t.parentId)] ? idMap[String(t.parentId)] : null,
+      name: String(t.name ?? "Untitled"),
+      type,
+      start: t.start,
+      duration: type === "milestone" ? 0 : Math.max(1, parseInt(t.duration, 10) || 1),
+      progress: Math.min(100, Math.max(0, Math.round(Number(t.progress) || 0))),
+      state: VALID_STATES.includes(t.state) ? t.state : "inprogress",
+      color: typeof t.color === "string" && t.color ? t.color : PALETTE[0],
+      collapsed: !!t.collapsed,
+      description: t.description ? String(t.description) : undefined,
+      dependsOn: (Array.isArray(t.dependsOn) ? t.dependsOn : []).map((d) => idMap[String(d)]).filter(Boolean),
+    };
+  });
+  return rollupAll(tasks);
 }
 
 function ancestorsReachable(tasks, fromId) {
@@ -427,7 +478,7 @@ function DepMenu({ x, y, onClose, onDelete }) {
 /* ----------------------------------------------------------------------
    Project switcher popover (multi-project support)
 ---------------------------------------------------------------------- */
-function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, onDelete, onCreate, onDuplicate, onClose }) {
+function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, onDelete, onCreate, onDuplicate, onExport, onImport, onClose }) {
   const ref = useRef(null);
   const [renamingId, setRenamingId] = useState(null);
   const [renameVal, setRenameVal] = useState("");
@@ -520,6 +571,13 @@ function ProjectSwitcher({ projects, currentId, anchorRect, onSelect, onRename, 
           <Plus size={14} /> New project
         </button>
       )}
+      <div className="h-px bg-slate-100 my-1.5" />
+      <button onClick={onExport} className="w-full text-left px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700">
+        <Download size={14} /> Export project…
+      </button>
+      <button onClick={onImport} className="w-full text-left px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-700">
+        <FolderKanban size={14} /> Import project…
+      </button>
     </div>
   );
 }
@@ -675,7 +733,7 @@ function DetailModal({ task, hasChildren, onSave, onDelete, onClose }) {
 
               {hasChildren && (
                 <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  This is a summary task — its Start Date, Days and End Date are calculated automatically from its subtasks. Edit the subtasks to change them, or drag this bar on the Gantt to move the whole group together.
+                  This is a summary task — its Start Date, Days, End Date and Progress are calculated automatically from its subtasks (progress is weighted by subtask duration). Edit the subtasks to change them, or drag this bar on the Gantt to move the whole group together.
                 </div>
               )}
 
@@ -731,7 +789,8 @@ function DetailModal({ task, hasChildren, onSave, onDelete, onClose }) {
                   <div className="flex items-center gap-2">
                     <input
                       type="number" min={0} max={100}
-                      className="w-full border border-slate-300 rounded-md px-2 h-10 text-sm"
+                      disabled={hasChildren}
+                      className="w-full border border-slate-300 rounded-md px-2 h-10 text-sm disabled:bg-slate-50 disabled:text-slate-400"
                       value={draft.progress}
                       onChange={(e) => update({ progress: Math.min(100, Math.max(0, parseInt(e.target.value || "0", 10))) })}
                     />
@@ -1044,6 +1103,149 @@ function ExportModal({ tasks, projectName, bounds, initialShowDates, onClose }) 
   );
 }
 
+/* ----------------------------------------------------------------------
+   Project Export / Import (JSON) — move a project to another machine
+---------------------------------------------------------------------- */
+function ProjectDataModal({ initialTab, projects, currentProject, onImport, onClose }) {
+  const [tab, setTab] = useState(initialTab || "export");
+  const [scope, setScope] = useState("current");
+  const [importText, setImportText] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const exportRef = useRef(null);
+
+  const exportJson = useMemo(() => {
+    const list = scope === "all" ? projects : [currentProject];
+    const payload = {
+      app: "gantt-project",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      projects: list.map((p) => ({ name: p.name, tasks: p.tasks })),
+    };
+    return JSON.stringify(payload, null, 2);
+  }, [scope, projects, currentProject]);
+
+  const fileName = `${(scope === "all" ? "gantt-projects" : currentProject.name).replace(/[^\w\-]+/g, "_") || "gantt-project"}.json`;
+
+  const download = () => {
+    try {
+      const blob = new Blob([exportJson], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = fileName;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setNotice("Download started. If nothing was saved, use Copy and paste into a .json file instead.");
+    } catch (e) {
+      setNotice("Download is blocked here — use Copy instead.");
+    }
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(exportJson);
+      setNotice("Copied to clipboard.");
+    } catch (e) {
+      if (exportRef.current) {
+        exportRef.current.focus(); exportRef.current.select();
+        try { document.execCommand("copy"); setNotice("Copied to clipboard."); return; } catch (e2) { /* fall through */ }
+      }
+      setNotice("Select the text and press Ctrl/Cmd+C.");
+    }
+  };
+
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    try { setImportText(await f.text()); setError(""); setNotice(`Loaded ${f.name}`); }
+    catch (err) { setError("Could not read that file."); }
+    e.target.value = "";
+  };
+
+  const doImport = () => {
+    setError(""); setNotice("");
+    let data;
+    try { data = JSON.parse(importText); } catch (e) { setError("That isn't valid JSON."); return; }
+    try {
+      if (!data || data.app !== "gantt-project") throw new Error("This file wasn't exported from this app.");
+      const list = Array.isArray(data.projects) ? data.projects : data.project ? [data.project] : null;
+      if (!list || !list.length) throw new Error("No projects found in the file.");
+      const imported = list.map((pr, i) => {
+        const name = String(pr.name || `Imported project ${i + 1}`);
+        return { id: newId(), name, tasks: sanitizeImportedTasks(pr.tasks, name) };
+      });
+      onImport(imported);
+      onClose();
+    } catch (e) {
+      setError(e.message || "Import failed.");
+    }
+  };
+
+  const tabBtn = (key, label) => (
+    <button
+      onClick={() => { setTab(key); setError(""); setNotice(""); }}
+      className={`px-3 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === key ? "border-slate-900 text-slate-900" : "border-transparent text-slate-400 hover:text-slate-600"}`}
+    >{label}</button>
+  );
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center" style={{ backgroundColor: "rgba(15,23,42,0.45)", zIndex: 50 }} onMouseDown={onClose}>
+      <div onMouseDown={(e) => e.stopPropagation()} className="bg-white rounded-xl shadow-2xl border border-slate-200 flex flex-col" style={{ width: 620, maxWidth: "95vw", maxHeight: "90vh" }}>
+        <div className="flex items-center border-b border-slate-200 px-2 shrink-0">
+          {tabBtn("export", "Export project")}
+          {tabBtn("import", "Import project")}
+          <button onClick={onClose} className="ml-auto mr-1 h-8 w-8 flex items-center justify-center rounded-md hover:bg-slate-100 text-slate-400"><X size={16} /></button>
+        </div>
+
+        <div className="p-5 overflow-auto space-y-3" style={{ minHeight: 0 }}>
+          {tab === "export" ? (
+            <>
+              <p className="text-sm text-slate-500">Save your plan as a JSON file, then use <b>Import project</b> on another computer to load it.</p>
+              <div className="flex items-center gap-4 text-sm text-slate-600">
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="radio" checked={scope === "current"} onChange={() => setScope("current")} /> Current project</label>
+                <label className="flex items-center gap-1.5 cursor-pointer"><input type="radio" checked={scope === "all"} onChange={() => setScope("all")} /> All projects ({projects.length})</label>
+              </div>
+              <textarea
+                ref={exportRef}
+                readOnly
+                value={exportJson}
+                className="w-full border border-slate-300 rounded-md p-3 text-xs bg-slate-50"
+                style={{ height: 220, fontFamily: "ui-monospace, Menlo, Consolas, monospace", resize: "none" }}
+                onFocus={(e) => e.target.select()}
+              />
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-slate-500">Choose a JSON file exported from this app, or paste its contents. Imported projects are added as new projects — nothing existing is overwritten.</p>
+              <input type="file" accept=".json,application/json" onChange={onFile} className="text-sm text-slate-600" />
+              <textarea
+                value={importText}
+                onChange={(e) => { setImportText(e.target.value); setError(""); }}
+                placeholder="…or paste exported JSON here"
+                className="w-full border border-slate-300 rounded-md p-3 text-xs"
+                style={{ height: 200, fontFamily: "ui-monospace, Menlo, Consolas, monospace", resize: "none" }}
+              />
+            </>
+          )}
+          {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
+          {notice && !error && <div className="text-xs text-slate-500">{notice}</div>}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-200 shrink-0">
+          <button onClick={onClose} className="h-9 px-4 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm">Close</button>
+          {tab === "export" ? (
+            <>
+              <button onClick={copy} className="h-9 px-4 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm flex items-center gap-1.5"><Copy size={14} /> Copy</button>
+              <button onClick={download} className="h-9 px-4 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium flex items-center gap-1.5"><Download size={14} /> Download .json</button>
+            </>
+          ) : (
+            <button onClick={doImport} disabled={!importText.trim()} className="h-9 px-4 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium" style={{ opacity: importText.trim() ? 1 : 0.4 }}>Import</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function dependencyRoute(p, c, rowH) {
   // p = {x1, y} predecessor's connection-out point; c = {x0, y} successor's connection-in point.
   // Always approaches c.x0 moving left-to-right, so the arrowhead enters the Start edge from the front,
@@ -1150,7 +1352,7 @@ function SCurveModal({ tasks, bounds, todayIso, onClose }) {
 ---------------------------------------------------------------------- */
 export default function ProjectGanttApp() {
   const [projects, setProjects] = useState(() => [
-    { id: "proj1", name: "Website Redesign Launch", tasks: seedTasks() },
+    { id: "proj1", name: "Website Redesign Launch", tasks: rollupAll(seedTasks()) },
   ]);
   const [currentProjectId, setCurrentProjectId] = useState("proj1");
   const [storageLoaded, setStorageLoaded] = useState(false);
@@ -1158,28 +1360,32 @@ export default function ProjectGanttApp() {
 
   // Load any previously saved projects on mount, so the plan survives closing/reopening the page.
   useEffect(() => {
-    try {
-      const savedRaw = window.localStorage.getItem(STORAGE_KEY_PROJECTS);
-      if (savedRaw) {
-        const parsed = JSON.parse(savedRaw);
-        if (Array.isArray(parsed) && parsed.length) setProjects(parsed);
-      }
-    } catch (e) { /* nothing saved yet, or storage unavailable */ }
-    try {
-      const savedCur = window.localStorage.getItem(STORAGE_KEY_CURRENT);
-      if (savedCur) setCurrentProjectId(savedCur);
-    } catch (e) { /* nothing saved yet */ }
-    setStorageLoaded(true);
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await window.storage.get(STORAGE_KEY_PROJECTS, false);
+        if (!cancelled && saved && saved.value) {
+          const parsed = JSON.parse(saved.value);
+          if (Array.isArray(parsed) && parsed.length) setProjects(parsed.map((pr) => ({ ...pr, tasks: rollupAll(pr.tasks || []) })));
+        }
+      } catch (e) { /* nothing saved yet */ }
+      try {
+        const savedCur = await window.storage.get(STORAGE_KEY_CURRENT, false);
+        if (!cancelled && savedCur && savedCur.value) setCurrentProjectId(savedCur.value);
+      } catch (e) { /* nothing saved yet */ }
+      if (!cancelled) setStorageLoaded(true);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Persist whenever projects or the active project change, once the initial load has settled.
   useEffect(() => {
     if (!storageLoaded) return;
     setSaveState("saving");
-    const t = setTimeout(() => {
+    const t = setTimeout(async () => {
       try {
-        window.localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(projects));
-        window.localStorage.setItem(STORAGE_KEY_CURRENT, currentProjectId);
+        await window.storage.set(STORAGE_KEY_PROJECTS, JSON.stringify(projects), false);
+        await window.storage.set(STORAGE_KEY_CURRENT, currentProjectId, false);
         setSaveState("saved");
       } catch (e) {
         setSaveState("idle");
@@ -1203,6 +1409,7 @@ export default function ProjectGanttApp() {
   const [depMenu, setDepMenu] = useState(null); // {predId, taskId, x, y}
   const [exportOpen, setExportOpen] = useState(false);
   const [sCurveOpen, setSCurveOpen] = useState(false);
+  const [dataModal, setDataModal] = useState(null); // 'export' | 'import' | null
   const [projSwitcherOpen, setProjSwitcherOpen] = useState(false);
   const [highlightCritical, setHighlightCritical] = useState(false);
   const [showDateColumns, setShowDateColumns] = useState(false);
@@ -1250,7 +1457,7 @@ export default function ProjectGanttApp() {
     if (hasKids) {
       // Summary tasks' dates are derived from their subtasks — never overwrite them directly.
       const original = tasks.find((t) => t.id === clean.id);
-      if (original) { clean.start = original.start; clean.duration = original.duration; }
+      if (original) { clean.start = original.start; clean.duration = original.duration; clean.progress = original.progress; }
     }
     setTasks((ts) => {
       const next = ts.map((t) => (t.id === clean.id ? { ...t, ...clean } : t));
@@ -1321,6 +1528,10 @@ export default function ProjectGanttApp() {
     const id = newId();
     setProjects((ps) => [...ps, { id, name, tasks: starterTasks() }]);
     setCurrentProjectId(id);
+  };
+  const importProjects = (imported) => {
+    setProjects((ps) => [...ps, ...imported]);
+    setCurrentProjectId(imported[0].id);
   };
   const duplicateProject = (id) => {
     const proj = projects.find((p) => p.id === id);
@@ -1835,6 +2046,8 @@ export default function ProjectGanttApp() {
           onDelete={deleteProject}
           onCreate={createProject}
           onDuplicate={duplicateProject}
+          onExport={() => { setProjSwitcherOpen(false); setDataModal("export"); }}
+          onImport={() => { setProjSwitcherOpen(false); setDataModal("import"); }}
           onClose={() => setProjSwitcherOpen(false)}
         />
       )}
@@ -1845,6 +2058,10 @@ export default function ProjectGanttApp() {
 
       {exportOpen && (
         <ExportModal tasks={tasks} projectName={currentProject.name} bounds={bounds} initialShowDates={showDateColumns} onClose={() => setExportOpen(false)} />
+      )}
+
+      {dataModal && (
+        <ProjectDataModal initialTab={dataModal} projects={projects} currentProject={currentProject} onImport={importProjects} onClose={() => setDataModal(null)} />
       )}
 
       {sCurveOpen && (
